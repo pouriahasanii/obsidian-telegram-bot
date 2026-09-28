@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o ConnectTimeout=30 82Yq1U1wl135PPupx5C1ewW1nyEgYLVx@ssh.app.daytona.io \"pm2 list && echo '---' && pm2 logs obsidian-bot --lines 10 --nostream\")",
+      "Bash(ssh -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o ConnectTimeout=30 R5kJAZf4OGsYS7Owc6qTsIEwsYaTJHak@ssh.app.daytona.io \"pm2 list && echo '---BOT LOGS---' && pm2 logs obsidian-bot --lines 15 --nostream && echo '---CRON---' && crontab -l 2>/dev/null && echo '---VAULT---' && ls /root/obsidian-vault-telegram-bot/PKM-Vault/\")",
+      "Bash(ssh -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o ConnectTimeout=30 -o StrictHostKeyChecking=no R5kJAZf4OGsYS7Owc6qTsIEwsYaTJHak@ssh.app.daytona.io \"echo CONNECTED && pm2 list\")"
+    ]
+  }
+}
