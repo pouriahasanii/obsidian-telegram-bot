@@ -96,7 +96,7 @@ const githubApi = axios.create({
   },
 });
 
-async function getAvailableFolders(): Promise<string[]> {
+async function escapeHtml(str: string): string { return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); } function getAvailableFolders(): Promise<string[]> {
   try {
     const res = await githubApi.get(`/contents?ref=${GITHUB_BRANCH}`);
     const repoDirs = Array.isArray(res.data)
@@ -244,8 +244,8 @@ bot.on(["message:text", "message:caption"], async (ctx: Context) => {
   drafts.set(userId, { text, url, title, source });
   const kb = await buildFolderKeyboard();
   await ctx.reply(
-    `📌 **عنوان:** ${title}\n🌐 **منبع:** ${source}\n\nلطفاً پوشه مقصد در Obsidian را انتخاب کنید:`,
-    { parse_mode: "Markdown", reply_markup: kb }
+    `📌 <b>عنوان:</b> ${escapeHtml(title)}\n🌐 <b>منبع:</b> ${escapeHtml(source)}\n\nلطفاً پوشه مقصد در Obsidian را انتخاب کنید:`,
+    { parse_mode: "HTML", reply_markup: kb }
   );
 });
 
@@ -264,16 +264,16 @@ bot.on("callback_query:data", async (ctx) => {
     if (folder === "__NEW__") {
       draft.awaitingNewFolder = true;
       await ctx.answerCallbackQuery();
-      await ctx.editMessageText("✏️ نام پوشه جدید را تایپ و ارسال کنید (مثلاً `08_Marketing` یا `Security`):", {
-        parse_mode: "Markdown",
+      await ctx.editMessageText("✏️ نام پوشه جدید را تایپ و ارسال کنید (مثلاً <code>08_Marketing</code> یا <code>Security</code>):", {
+        parse_mode: "HTML",
       });
       return;
     }
     draft.folder = folder;
     await ctx.answerCallbackQuery();
     await ctx.editMessageText(
-      `📁 **پوشه انتخاب‌شده:** ${folder}\n\nحالا **Status** این مطلب را انتخاب کنید:`,
-      { parse_mode: "Markdown", reply_markup: buildStatusKeyboard() }
+      `📁 <b>پوشه انتخاب‌شده:</b> <code>${escapeHtml(folder)}</code>\n\nحالا <b>Status</b> این مطلب را انتخاب کنید:`,
+      { parse_mode: "HTML", reply_markup: buildStatusKeyboard() }
     );
     return;
   }
@@ -285,14 +285,17 @@ bot.on("callback_query:data", async (ctx) => {
       const fileUrl = await saveNoteToGitHub(draft, status);
       drafts.delete(userId);
       await ctx.editMessageText(
-        `✅ **در Obsidian و GitHub ذخیره شد!**\n\n📁 **پوشه:** ${draft.folder}\n🏷 **وضعیت:** ${status}\n🌐 **منبع:** ${draft.source}\n🔗 [مشاهده فایل در گیت‌هاب](${fileUrl})`,
-        { parse_mode: "Markdown" }
+        `✅ <b>در Obsidian و GitHub ذخیره شد!</b>\n\n📁 <b>پوشه:</b> <code>${escapeHtml(draft.folder || "00_Inbox")}</code>\n🏷 <b>وضعیت:</b> <code>${escapeHtml(status)}</code>\n🌐 <b>منبع:</b> ${escapeHtml(draft.source)}\n🔗 <a href="${fileUrl}">مشاهده فایل در گیت‌هاب</a>`,
+        { parse_mode: "HTML" }
       );
     } catch (err: any) {
       await ctx.editMessageText(`❌ خطا در ذخیره فایل در گیت‌هاب:\n${err.message}`);
     }
   }
 });
+  bot.catch((err) => {
+  console.error("Bot error:", err.message || err);
+});    
 
 bot.start();
 console.log("🚀 Obsidian Telegram Bot (GitHub API mode) is running...");
