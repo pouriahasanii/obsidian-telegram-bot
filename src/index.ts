@@ -14,7 +14,7 @@ const envCandidates = [
 for (const envPath of envCandidates) {
   if (fs.existsSync(envPath)) {
     dotenv.config({ path: envPath });
-    const raw = fs.readFileSync(envPath, "utf8");
+    const raw = fs.readFileSync(envPath, "utf8").replace(/^\uFEFF/, "");
     for (const line of raw.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;
@@ -42,6 +42,8 @@ const ALLOWED_USERS = (process.env.ALLOWED_USER_IDS || "")
 if (!BOT_TOKEN || !GITHUB_TOKEN) {
   console.error("Missing env vars:", {
     cwd: process.cwd(),
+    envExists: envCandidates.map((p) => ({ p, exists: fs.existsSync(p) })),
+    files: fs.readdirSync(process.cwd()),
     hasBotToken: Boolean(BOT_TOKEN),
     hasGithubToken: Boolean(GITHUB_TOKEN),
   });
