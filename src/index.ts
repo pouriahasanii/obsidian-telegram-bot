@@ -3,8 +3,31 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import * as yaml from "js-yaml";
 import * as dotenv from "dotenv";
+import * as fs from "fs";
+import * as path from "path";
 
-dotenv.config();
+const envCandidates = [
+  path.resolve(process.cwd(), ".env"),
+  "/home/container/.env",
+];
+
+for (const envPath of envCandidates) {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+    const raw = fs.readFileSync(envPath, "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx > 0) {
+        const key = trimmed.slice(0, eqIdx).trim();
+        const val = trimmed.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, "");
+        if (!process.env[key]) process.env[key] = val;
+      }
+    }
+    break;
+  }
+}
 
 const BOT_TOKEN = process.env.BOT_TOKEN || "";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
@@ -17,7 +40,11 @@ const ALLOWED_USERS = (process.env.ALLOWED_USER_IDS || "")
   .filter(Boolean);
 
 if (!BOT_TOKEN || !GITHUB_TOKEN) {
-  console.error("Missing BOT_TOKEN or GITHUB_TOKEN in environment variables.");
+  console.error("Missing env vars:", {
+    cwd: process.cwd(),
+    hasBotToken: Boolean(BOT_TOKEN),
+    hasGithubToken: Boolean(GITHUB_TOKEN),
+  });
   process.exit(1);
 }
 
