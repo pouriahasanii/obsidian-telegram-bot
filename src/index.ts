@@ -42,8 +42,6 @@ const ALLOWED_USERS = (process.env.ALLOWED_USER_IDS || "")
 if (!BOT_TOKEN || !GITHUB_TOKEN) {
   console.error("Missing env vars:", {
     cwd: process.cwd(),
-    envExists: envCandidates.map((p) => ({ p, exists: fs.existsSync(p) })),
-    files: fs.readdirSync(process.cwd()),
     hasBotToken: Boolean(BOT_TOKEN),
     hasGithubToken: Boolean(GITHUB_TOKEN),
   });
@@ -77,6 +75,9 @@ const STATUS_LIST = [
 
 interface DraftNote {
   text: string;
+  userNote: string;
+  caption?: string;
+  author?: string;
   url?: string;
   title: string;
   source: string;
@@ -96,9 +97,13 @@ const githubApi = axios.create({
   },
 });
 
-function escapeHtml(str: string): string { 
+function escapeHtml(str: string): string {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-} 
+}
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[\\/:*?"<>|\n\r]+/g, "-").trim().slice(0, 50);
+}
 
 async function getAvailableFolders(): Promise<string[]> {
   try {
@@ -127,22 +132,78 @@ function detectSource(text: string): { source: string; url?: string } {
   return { source: "web", url };
 }
 
-async function extractTitle(text: string, url?: string): Promise<string> {
-  const cleanText = text.replace(/https?:\/\/[^\s]+/g, "").trim();
-  if (cleanText.length > 3) {
-    return cleanText.split("\n")[0].slice(0, 50).replace(/[\\/:*?"<>|]/g, "-");
-  }
+async function extractPostContent(
+  text: string,
+  url: string | undefined,
+  source: string
+): Promise<{ title: string; caption?: string; author?: string; userNote: string }> {
+  const userNote = text.replace(/https?:\/\/[^\s]+/g, "").trim();
+  let title = userNote.length > 3 ? sanitizeFilename(userNote.split("\n")[0]) : "";
+  let caption: string | undefined;
+  let author: string | undefined;
+
   if (url) {
     try {
-      const res = await axios.get(url, { timeout: 5000 });
-      const $ = cheerio.load(res.data);
-      const pageTitle = $("title").first().text().trim();
-      if (pageTitle) return pageTitle.slice(0, 50).replace(/[\\/:*?"<>|]/g, "-");
+      if (source === "twitter") {
+        const match = url.match(/(?:twitter\.com|x\.com)\/([^/]+)\/status\/(\d+)/i);
+        if (match) {
+          const res = await axios.get(`https://api.fxtwitter.com/${match[1]}/status/${match[2]}`, {
+            timeout: 6000,
+          });
+          const tweet = res.data?.tweet;
+          if (tweet) {
+            caption = tweet.text || undefined;
+            author = tweet.author?.name ? `${tweet.author.name} (@${tweet.author.screen_name})` : `@${match[1]}`;
+            if (!title && caption) title = sanitizeFilename(caption.split("\n")[0]);
+          }
+        }
+      } else if (source === "youtube") {
+        const res = await axios.get(
+          `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`,
+          { timeout: 6000 }
+        );
+        if (res.data?.title) {
+          if (!title) title = sanitizeFilename(res.data.title);
+          caption = res.data.title;
+          author = res.data.author_name || undefined;
+        }
+      } else {
+        const res = await axios.get(url, {
+          timeout: 6000,
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9,fa;q=0.8",
+          },
+        });
+        const $ = cheerio.load(res.data);
+        const ogTitle = $('meta[property="og:title"]').attr("content")?.trim() || $("title").first().text().trim();
+        const ogDesc =
+          $('meta[property="og:description"]').attr("content")?.trim() ||
+          $('meta[name="description"]').attr("content")?.trim();
+
+        if (ogDesc) {
+          if (source === "instagram") {
+            const quoted = ogDesc.match(/:\s*["“]([\s\S]+)["”]\s*\.?$/);
+            caption = quoted ? quoted[1].trim() : ogDesc;
+            const igAuthor = ogDesc.match(/-\s*([^-\n]+?)\s+on\s+/i);
+            if (igAuthor) author = igAuthor[1].trim();
+          } else {
+            caption = ogDesc;
+          }
+        }
+        if (!title && ogTitle) title = sanitizeFilename(ogTitle);
+      }
     } catch {
-      // Fallback if scraping is blocked
+      // Fallback gracefully when scraping is blocked
     }
   }
-  return `Note-${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`;
+
+  if (!title) {
+    title = `Note-${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`;
+  }
+
+  return { title, caption, author, userNote };
 }
 
 async function buildFolderKeyboard(): Promise<InlineKeyboard> {
@@ -171,6 +232,7 @@ async function saveNoteToGitHub(draft: DraftNote, status: string): Promise<strin
   const shortId = Math.random().toString(36).substring(2, 7);
   const folder = draft.folder || "00_Inbox";
   const category = folder.replace(/^\d+_/, "").toLowerCase();
+  const sourceLabel = draft.source.charAt(0).toUpperCase() + draft.source.slice(1);
   const safeTitle = draft.title.replace(/\s+/g, "-").slice(0, 40) || "capture";
   const filePath = `${folder}/${dateStr}_${safeTitle}_${shortId}.md`;
 
@@ -182,23 +244,34 @@ async function saveNoteToGitHub(draft: DraftNote, status: string): Promise<strin
     captured_at: now.toISOString(),
     tags: [`cat/${category}`, `status/${status}`, `src/${draft.source}`],
   };
+  if (draft.author) frontmatter.author = draft.author;
   if (draft.url) frontmatter.url = draft.url;
 
-  const mdContent = [
+  const lines: string[] = [
     "---",
     yaml.dump(frontmatter).trim(),
     "---",
     "",
     `# ${draft.title}`,
     "",
-    draft.url ? `🔗 **لینک منبع:** ${draft.url}\n` : "",
-    "## 📝 محتوا",
-    "",
-    draft.text,
-    "",
-  ].join("\n");
+    `🧭 **گراف و اتصالات:** [[${folder}]] · [[${sourceLabel}]] · [[Visual_Board.canvas|بورد تصویری]]`,
+  ];
 
-  const base64Content = Buffer.from(mdContent, "utf8").toString("base64");
+  if (draft.author) lines.push(`👤 **نویسنده / پیج:** ${draft.author}`);
+  if (draft.url) lines.push(`🔗 **لینک منبع:** ${draft.url}`);
+
+  lines.push("");
+
+  if (draft.caption) {
+    lines.push("## 📝 کپشن پست", "", draft.caption, "");
+    if (draft.userNote) {
+      lines.push("## 💬 یادداشت شخصی", "", draft.userNote, "");
+    }
+  } else {
+    lines.push("## 📝 محتوا", "", draft.userNote || draft.text, "");
+  }
+
+  const base64Content = Buffer.from(lines.join("\n"), "utf8").toString("base64");
 
   const res = await githubApi.put(`/contents/${encodeURI(filePath)}`, {
     message: `📥 Capture [${category}/${status}]: ${draft.title}`,
@@ -220,7 +293,7 @@ bot.use(async (ctx, next) => {
 
 bot.command("start", async (ctx) => {
   await ctx.reply(
-    "✅ ربات مدیریت دانش Obsidian آماده است!\n\nهر لینک (اینستاگرام، توییتر/X، یوتیوب، وب) یا متنی را بفرستید تا پوشه و Status آن را انتخاب کنید و مستقیم در گیت‌هاب و Obsidian ذخیره شود."
+    "✅ ربات مدیریت دانش Obsidian آماده است!\n\nهر لینک (اینستاگرام، توییتر/X، یوتیوب، وب) یا متنی را بفرستید تا کپشن آن استخراج شود، پوشه و Status را انتخاب کنید و مستقیم در گیت‌هاب و گراف Obsidian ذخیره شود."
   );
 });
 
@@ -236,19 +309,22 @@ bot.on(["message:text", "message:caption"], async (ctx: Context) => {
     existingDraft.folder = cleanFolder;
     existingDraft.awaitingNewFolder = false;
     if (!customFolders.includes(cleanFolder)) customFolders.push(cleanFolder);
-    await ctx.reply(`📁 پوشه جدید «${cleanFolder}» انتخاب شد.\nحالا Status یادداشت را انتخاب کنید:`, {
-      reply_markup: buildStatusKeyboard(),
-    });
+    await ctx.reply(
+      `📁 <b>پوشه جدید انتخاب شد:</b> <code>${escapeHtml(cleanFolder)}</code>\n\nحالا <b>Status</b> یادداشت را انتخاب کنید:`,
+      { parse_mode: "HTML", reply_markup: buildStatusKeyboard() }
+    );
     return;
   }
 
   const { source, url } = detectSource(text);
-  const title = await extractTitle(text, url);
+  const { title, caption, author, userNote } = await extractPostContent(text, url, source);
 
-  drafts.set(userId, { text, url, title, source });
+  drafts.set(userId, { text, userNote, caption, author, url, title, source });
   const kb = await buildFolderKeyboard();
+  const captionPreview = caption ? `\n📝 <b>کپشن استخراج شد</b> (${caption.length} کاراکتر)` : "";
+
   await ctx.reply(
-    `📌 <b>عنوان:</b> ${escapeHtml(title)}\n🌐 <b>منبع:</b> ${escapeHtml(source)}\n\nلطفاً پوشه مقصد در Obsidian را انتخاب کنید:`,
+    `📌 <b>عنوان:</b> ${escapeHtml(title)}\n🌐 <b>منبع:</b> ${escapeHtml(source)}${captionPreview}\n\nلطفاً پوشه مقصد در Obsidian را انتخاب کنید:`,
     { parse_mode: "HTML", reply_markup: kb }
   );
 });
@@ -268,9 +344,10 @@ bot.on("callback_query:data", async (ctx) => {
     if (folder === "__NEW__") {
       draft.awaitingNewFolder = true;
       await ctx.answerCallbackQuery();
-      await ctx.editMessageText("✏️ نام پوشه جدید را تایپ و ارسال کنید (مثلاً <code>08_Marketing</code> یا <code>Security</code>):", {
-        parse_mode: "HTML",
-      });
+      await ctx.editMessageText(
+        "✏️ نام پوشه جدید را تایپ و ارسال کنید (مثلاً <code>08_Marketing</code> یا <code>Security</code>):",
+        { parse_mode: "HTML" }
+      );
       return;
     }
     draft.folder = folder;
@@ -297,9 +374,10 @@ bot.on("callback_query:data", async (ctx) => {
     }
   }
 });
-  bot.catch((err) => {
+
+bot.catch((err) => {
   console.error("Bot error:", err.message || err);
-});    
+});
 
 bot.start();
 console.log("🚀 Obsidian Telegram Bot (GitHub API mode) is running...");
