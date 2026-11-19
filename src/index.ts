@@ -96,7 +96,11 @@ const githubApi = axios.create({
   },
 });
 
-async function escapeHtml(str: string): string { return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); } function getAvailableFolders(): Promise<string[]> {
+function escapeHtml(str: string): string { 
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+} 
+
+async function getAvailableFolders(): Promise<string[]> {
   try {
     const res = await githubApi.get(`/contents?ref=${GITHUB_BRANCH}`);
     const repoDirs = Array.isArray(res.data)
